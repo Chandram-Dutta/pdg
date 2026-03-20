@@ -49,6 +49,12 @@ def _write_section(
             doc.add_picture(img, width=Inches(6))
             os.remove(img)
 
+    if state.analysis_approved and state.analysis_text:
+        doc.add_heading("Analysis", level=2)
+        for para in state.analysis_text.split("\n\n"):
+            if para.strip():
+                doc.add_paragraph(para.strip())
+
 
 def _heading_for(section: SectionDef, idx: int) -> str:
     if section.loading_levels:

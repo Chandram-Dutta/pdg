@@ -33,3 +33,5 @@ class SectionState:
     """Runtime state: CSV files assigned to a section."""
 
     csv_files: list[Path] = field(default_factory=list)
+    analysis_text: str = ""
+    analysis_approved: bool | None = None
