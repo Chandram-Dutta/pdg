@@ -7,20 +7,29 @@ import pandas as pd
 from dotenv import load_dotenv
 from groq import Groq
 
+from pdg.models import SectionDef
+
 # Load .env from project root
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from pdg.models import SectionDef
 
+def analyze_section(
+    section: SectionDef,
+    csv_files: list[Path],
+    previous_text: str = "",
+    feedback: str = "",
+) -> str:
+    """Call Groq LLM to generate a technical analysis for *section*.
 
-def analyze_section(section: SectionDef, csv_files: list[Path]) -> str:
-    """Call Groq LLM to generate a technical analysis for *section*."""
+    If ``previous_text`` and ``feedback`` are provided, the model is asked to
+    revise the prior analysis according to the reviewer's feedback.
+    """
     client = _get_client()
     csv_summary = _build_csv_summary(csv_files, section)
-    system_msg, user_msg = _build_prompt(section, csv_summary)
+    system_msg, user_msg = _build_prompt(section, csv_summary, previous_text, feedback)
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[
             {"role": "system", "content": system_msg},
             {"role": "user", "content": user_msg},
@@ -67,7 +76,12 @@ def _build_csv_summary(csv_files: list[Path], section: SectionDef) -> str:
     return "\n\n".join(parts)
 
 
-def _build_prompt(section: SectionDef, csv_summary: str) -> tuple[str, str]:
+def _build_prompt(
+    section: SectionDef,
+    csv_summary: str,
+    previous_text: str = "",
+    feedback: str = "",
+) -> tuple[str, str]:
     system_msg = (
         "You are a senior power systems engineer writing analysis for a "
         "formal engineering report. Guidelines:\n"
@@ -93,8 +107,19 @@ def _build_prompt(section: SectionDef, csv_summary: str) -> tuple[str, str]:
         user_parts.append(f"Loading levels: {', '.join(section.loading_levels)}\n")
 
     user_parts.append(f"Data:\n{csv_summary}\n")
-    user_parts.append(
-        "Write a technical analysis of this data for inclusion in the report."
-    )
+
+    if previous_text and feedback:
+        user_parts.append(
+            "A previous draft was rejected by the reviewer. Revise it according "
+            "to the feedback below. Keep what is correct, fix what is flagged, "
+            "and stay within the same tone and structure guidelines.\n\n"
+            f"Previous draft:\n{previous_text}\n\n"
+            f"Reviewer feedback:\n{feedback}\n\n"
+            "Return the revised analysis only."
+        )
+    else:
+        user_parts.append(
+            "Write a technical analysis of this data for inclusion in the report."
+        )
 
     return system_msg, "\n".join(user_parts)

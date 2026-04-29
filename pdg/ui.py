@@ -3,11 +3,12 @@ from __future__ import annotations
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from pdg.analysis import analyze_section
 from pdg.generator import generate_report
 from pdg.models import ReportDef, SectionDef, SectionState
+from pdg.preview import render_report_markdown
 from pdg.reports import REPORT_REGISTRY
 
 
@@ -81,8 +82,13 @@ class ReportApp(tk.Tk):
             side="left"
         )
 
-        ttk.Button(self, text="Generate Report", command=self._generate).pack(
-            anchor="e", padx=14, pady=10
+        action_row = ttk.Frame(self)
+        action_row.pack(anchor="e", padx=14, pady=10)
+        ttk.Button(action_row, text="Preview", command=self._preview).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(action_row, text="Generate Report", command=self._generate).pack(
+            side="left"
         )
         self.status_label = ttk.Label(self, text="")
         self.status_label.pack(anchor="w", padx=12)
@@ -173,16 +179,16 @@ class ReportApp(tk.Tk):
             abtn_row,
             text="Approve",
             state="disabled",
-            command=lambda k=key: self._set_approval(k, True),
+            command=lambda k=key: self._approve(k),
         )
         approve_btn.pack(side="left", padx=4)
         self._approve_btns[key] = approve_btn
 
         disapprove_btn = ttk.Button(
             abtn_row,
-            text="Disapprove",
+            text="Disapprove & Regenerate",
             state="disabled",
-            command=lambda k=key: self._set_approval(k, False),
+            command=lambda k=key: self._disapprove_and_regenerate(k),
         )
         disapprove_btn.pack(side="left", padx=4)
         self._disapprove_btns[key] = disapprove_btn
@@ -276,9 +282,13 @@ class ReportApp(tk.Tk):
         self._approve_btns[key].config(state="disabled")
         self._disapprove_btns[key].config(state="disabled")
         self._analyze_btns[key].config(state="normal")
-        self._status_labels[key].config(text="CSVs changed \u2013 re-analyze", foreground="orange")
+        self._status_labels[key].config(
+            text="CSVs changed \u2013 re-analyze", foreground="orange"
+        )
 
-    def _run_analysis(self, key: str) -> None:
+    def _run_analysis(
+        self, key: str, previous_text: str = "", feedback: str = ""
+    ) -> None:
         state = self._section_states[key]
         if not state.csv_files:
             messagebox.showwarning("No CSVs", "Add CSV files before analyzing.")
@@ -292,11 +302,14 @@ class ReportApp(tk.Tk):
         self._analyze_btns[key].config(state="disabled")
         self._approve_btns[key].config(state="disabled")
         self._disapprove_btns[key].config(state="disabled")
-        self._status_labels[key].config(text="Analyzing...", foreground="blue")
+        status_msg = "Regenerating..." if feedback else "Analyzing..."
+        self._status_labels[key].config(text=status_msg, foreground="blue")
 
         def _worker() -> None:
             try:
-                result = analyze_section(section, state.csv_files)
+                result = analyze_section(
+                    section, state.csv_files, previous_text, feedback
+                )
                 self.after(0, lambda: self._on_analysis_complete(key, result))
             except Exception as exc:  # noqa: BLE001
                 self.after(0, lambda e=exc: self._on_analysis_error(key, e))
@@ -318,30 +331,90 @@ class ReportApp(tk.Tk):
         self._analyze_btns[key].config(state="normal")
         self._approve_btns[key].config(state="normal")
         self._disapprove_btns[key].config(state="normal")
-        self._status_labels[key].config(text="Review and approve/disapprove", foreground="black")
+        self._status_labels[key].config(
+            text="Review and approve/disapprove", foreground="black"
+        )
 
     def _on_analysis_error(self, key: str, error: Exception) -> None:
         self._analyze_btns[key].config(state="normal")
         self._status_labels[key].config(text="Analysis failed", foreground="red")
         messagebox.showerror("Analysis Error", str(error))
 
-    def _set_approval(self, key: str, approved: bool) -> None:
+    def _approve(self, key: str) -> None:
         state = self._section_states[key]
-        state.analysis_approved = approved
+        state.analysis_approved = True
+        self._status_labels[key].config(text="APPROVED", foreground="green")
+        self._approve_btns[key].config(state="disabled")
+        self._disapprove_btns[key].config(state="normal")
 
-        if approved:
-            self._status_labels[key].config(text="APPROVED", foreground="green")
-            self._approve_btns[key].config(state="disabled")
-            self._disapprove_btns[key].config(state="normal")
-        else:
-            self._status_labels[key].config(text="DISAPPROVED", foreground="red")
-            self._disapprove_btns[key].config(state="disabled")
-            self._approve_btns[key].config(state="normal")
+    def _disapprove_and_regenerate(self, key: str) -> None:
+        state = self._section_states[key]
+        feedback = simpledialog.askstring(
+            "Regenerate analysis",
+            "What should the model fix or change?",
+            parent=self,
+        )
+        if not feedback or not feedback.strip():
+            return
+        state.analysis_approved = False
+        self._run_analysis(key, previous_text=state.analysis_text, feedback=feedback.strip())
 
     def _section_for(self, key: str) -> SectionDef | None:
         if not self._current_report:
             return None
         return next((s for s in self._current_report.sections if s.key == key), None)
+
+    # ── preview ──────────────────────────────────────────────────────────
+
+    def _preview(self) -> None:
+        if not self._current_report:
+            messagebox.showerror("No report", "Select a report type.")
+            return
+        if not any(s.csv_files for s in self._section_states.values()):
+            messagebox.showerror("No CSVs", "Add CSVs to at least one section.")
+            return
+
+        markdown = render_report_markdown(self._current_report, self._section_states)
+
+        win = tk.Toplevel(self)
+        win.title(f"Preview – {self._current_report.name}")
+        win.geometry("900x700")
+
+        toolbar = ttk.Frame(win)
+        toolbar.pack(fill="x", padx=8, pady=6)
+        ttk.Label(
+            toolbar,
+            text="Markdown approximation of the docx output. "
+            "Tables are truncated to 10 rows; charts are placeholders.",
+            foreground="gray",
+        ).pack(side="left")
+        ttk.Button(
+            toolbar, text="Refresh", command=lambda: self._refresh_preview(text)
+        ).pack(side="right")
+
+        text_frame = ttk.Frame(win)
+        text_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        scrollbar = ttk.Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+        text = tk.Text(
+            text_frame,
+            wrap="word",
+            font=("Menlo", 11),
+            yscrollcommand=scrollbar.set,
+        )
+        text.pack(fill="both", expand=True)
+        scrollbar.config(command=text.yview)
+        text.insert("1.0", markdown)
+        text.config(state="disabled")
+
+    def _refresh_preview(self, text_widget: tk.Text) -> None:
+        if not self._current_report:
+            return
+        markdown = render_report_markdown(self._current_report, self._section_states)
+        text_widget.config(state="normal")
+        text_widget.delete("1.0", tk.END)
+        text_widget.insert("1.0", markdown)
+        text_widget.config(state="disabled")
 
     # ── generation ───────────────────────────────────────────────────────
 
@@ -354,6 +427,19 @@ class ReportApp(tk.Tk):
             return
         if not any(s.csv_files for s in self._section_states.values()):
             messagebox.showerror("No CSVs", "Add CSVs to at least one section.")
+            return
+
+        unapproved = [
+            self._section_for(k).title
+            for k, s in self._section_states.items()
+            if s.csv_files and s.analysis_approved is not True
+        ]
+        if unapproved:
+            messagebox.showerror(
+                "Analysis not approved",
+                "Run and approve the analysis for these sections before generating:\n\n"
+                + "\n".join(f"• {t}" for t in unapproved),
+            )
             return
 
         self.output_path = Path(self.output_entry.get().strip())
