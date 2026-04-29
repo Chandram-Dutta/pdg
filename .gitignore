@@ -9,3 +9,8 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# Local data — kept out of git history
+csv/
+*.csv
+*.pdf
